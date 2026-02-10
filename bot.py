@@ -1,7 +1,7 @@
 import asyncio
 import sqlite3
 import logging
-import os  # Добавили для работы с переменными окружения
+import os
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, Command, or_f
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
@@ -9,22 +9,20 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Настройка логирования для консоли хостинга
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- КОНФИГУРАЦИЯ ---
-# Бот теперь берет токен из переменной окружения BOT_TOKEN
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-OWNER_ID = 5065061081 # Замени на свой реальный числовой ID
+OWNER_ID = 5065061081 # ЗАМЕНИ НА СВОЙ ID (цифрами)
 NEWS_URL = "https://t.me/vanilandes"
 
-# Проверка, что токен загрузился
 if not BOT_TOKEN:
-    logger.error("ОШИБКА: Переменная окружения BOT_TOKEN не найдена!")
+    logger.error("ОШИБКА: Токен не найден в Environment Variables!")
     exit(1)
 
-# --- БД ---
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect('vanilla_admin.db')
     cur = conn.cursor()
@@ -74,39 +72,36 @@ async def is_admin(user_id):
     conn.close()
     return res is not None
 
-async def check_access(m_or_cb):
-    user_id = m_or_cb.from_user.id
+async def check_access(m):
+    user_id = m.from_user.id
     conn = sqlite3.connect('vanilla_admin.db')
     res = conn.cursor().execute("SELECT 1 FROM blacklist WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
-    if res:
-        return False
-    return True
+    return res is None
 
-# --- ОСНОВНЫЕ КОМАНДЫ ---
+# --- ОБРАБОТЧИКИ ---
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     if not await check_access(message): return
-    await state.clear()
+    await state.clear()  # Сбрасываем зависшие репорты
     conn = sqlite3.connect('vanilla_admin.db')
     conn.cursor().execute("INSERT OR IGNORE INTO users VALUES (?)", (message.from_user.id,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     await message.answer(f"👋 Привет, {message.from_user.first_name}!\nДобро пожаловать в VanillaLand.", reply_markup=main_kb())
 
 @router.message(or_f(F.text.lower().in_({"админ", "админка", "ап"}), Command("admin")))
-async def admin_entry(message: Message):
-    if not await is_admin(message.from_user.id):
-        return
-    await message.answer("🛠 Панель управления VanillaLand:", reply_markup=admin_kb())
+async def admin_entry(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id): return
+    await state.clear()
+    await message.answer("🛠 Панель управления:", reply_markup=admin_kb())
 
-# --- ЛОГИКА РЕПОРТОВ ---
+# --- ЛОГИКА РЕПОРТА (Коротко) ---
 @router.callback_query(F.data == "req_report")
 async def report_1(cb: CallbackQuery, state: FSMContext):
     await cb.message.delete()
-    msg = await cb.message.answer("🚨 Введите <b>точный никнейм</b> игрока с маленькой буквы, на которого хотите кинуть репорт:", parse_mode="HTML")
-    await state.set_state(States.report_nick)
-    await state.update_data(last_id=msg.message_id)
+    msg = await cb.message.answer("🚨 Введите <b>точный никнейм</b> нарушителя:", parse_mode="HTML")
+    await state.set_state(States.report_nick); await state.update_data(last_id=msg.message_id)
 
 @router.message(States.report_nick)
 async def report_2(m: Message, state: FSMContext):
@@ -114,9 +109,8 @@ async def report_2(m: Message, state: FSMContext):
     try: await bot.delete_message(m.chat.id, d['last_id']); await m.delete()
     except: pass
     await state.update_data(nick=m.text)
-    msg = await m.answer(f"📝 Теперь введите <b>Причину</b> для репорта на {m.text}:", parse_mode="HTML")
-    await state.set_state(States.report_reason)
-    await state.update_data(last_id=msg.message_id)
+    msg = await m.answer(f"📝 Теперь введите <b>причину</b> для {m.text}:", parse_mode="HTML")
+    await state.set_state(States.report_reason); await state.update_data(last_id=msg.message_id)
 
 @router.message(States.report_reason)
 async def report_3(m: Message, state: FSMContext):
@@ -127,16 +121,14 @@ async def report_3(m: Message, state: FSMContext):
     conn = sqlite3.connect('vanilla_admin.db')
     conn.cursor().execute("INSERT INTO tickets (user_id, user_name, type, text) VALUES (?, ?, ?, ?)", (m.from_user.id, m.from_user.full_name, "REPORT", txt))
     conn.commit(); conn.close()
-    await m.answer("✅ Репорт успешно отправлен!", reply_markup=main_kb())
-    await state.clear()
+    await m.answer("✅ Репорт отправлен!", reply_markup=main_kb()); await state.clear()
 
 # --- СВЯЗЬ ---
 @router.callback_query(F.data == "req_support")
 async def supp_1(cb: CallbackQuery, state: FSMContext):
     await cb.message.delete()
     msg = await cb.message.answer("📩 Напишите ваше обращение администрации:")
-    await state.set_state(States.waiting_support)
-    await state.update_data(last_id=msg.message_id)
+    await state.set_state(States.waiting_support); await state.update_data(last_id=msg.message_id)
 
 @router.message(States.waiting_support)
 async def supp_2(m: Message, state: FSMContext):
@@ -146,24 +138,19 @@ async def supp_2(m: Message, state: FSMContext):
     conn = sqlite3.connect('vanilla_admin.db')
     conn.cursor().execute("INSERT INTO tickets (user_id, user_name, type, text) VALUES (?, ?, ?, ?)", (m.from_user.id, m.from_user.full_name, "SUPPORT", m.text))
     conn.commit(); conn.close()
-    await m.answer("✅ Сообщение отправлено!", reply_markup=main_kb())
-    await state.clear()
+    await m.answer("✅ Отправлено!", reply_markup=main_kb()); await state.clear()
 
-# --- АДМИНКА ПРОСМОТР ---
+# --- АДМИНКА (Просмотр и Ответы) ---
 async def show_next(m_or_cb, t_type):
     conn = sqlite3.connect('vanilla_admin.db')
     t = conn.cursor().execute("SELECT id, user_name, text, user_id FROM tickets WHERE type = ? ORDER BY id ASC LIMIT 1", (t_type,)).fetchone()
     conn.close()
     if not t:
-        txt = f"✅ Список {t_type} пуст."
-        if isinstance(m_or_cb, CallbackQuery): await m_or_cb.message.edit_text(txt, reply_markup=admin_kb())
-        else: await m_or_cb.answer(txt, reply_markup=admin_kb())
+        if isinstance(m_or_cb, CallbackQuery): await m_or_cb.message.edit_text(f"✅ Список {t_type} пуст.", reply_markup=admin_kb())
+        else: await m_or_cb.answer(f"✅ Список {t_type} пуст.", reply_markup=admin_kb())
         return
     txt = f"<b>{t_type} #{t[0]}</b>\nОт: {t[1]}\nID: <code>{t[3]}</code>\n\n{t[2]}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Ответить", callback_data=f"ans_{t[0]}_{t_type}")],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{t[0]}_{t_type}")]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✍️ Ответить", callback_data=f"ans_{t[0]}_{t_type}")],[InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_{t[0]}_{t_type}")]])
     if isinstance(m_or_cb, CallbackQuery): await m_or_cb.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
     else: await m_or_cb.answer(txt, reply_markup=kb, parse_mode="HTML")
 
@@ -192,13 +179,13 @@ async def a_s(m: Message, state: FSMContext):
         conn.cursor().execute("DELETE FROM tickets WHERE id = ?", (d['aid'],)); conn.commit()
     conn.close(); await state.clear(); await show_next(m, d['atype'])
 
-# --- АДМИН ФУНКЦИИ (БАН/АДМИНЫ) ---
+# --- АДМИН КНОПКИ ---
 @router.callback_query(F.data == "admin_ban_system")
-async def ban_system(cb: CallbackQuery, state: FSMContext):
+async def ban_s(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("🛡 Введите ID для Бана/Разбана:"); await state.set_state(States.admin_ban_id)
 
 @router.message(States.admin_ban_id)
-async def ban_process(m: Message, state: FSMContext):
+async def ban_p(m: Message, state: FSMContext):
     try:
         tid = int(m.text)
         conn = sqlite3.connect('vanilla_admin.db'); cur = conn.cursor()
@@ -211,48 +198,52 @@ async def ban_process(m: Message, state: FSMContext):
     await state.clear()
 
 @router.callback_query(F.data == "admin_add_new")
-async def add_admin(cb: CallbackQuery, state: FSMContext):
+async def add_a(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != OWNER_ID: return
     await cb.message.answer("➕ Введите ID нового админа:"); await state.set_state(States.admin_add_id)
 
 @router.message(States.admin_add_id)
-async def add_admin_process(m: Message, state: FSMContext):
+async def add_a_p(m: Message, state: FSMContext):
     try:
         conn = sqlite3.connect('vanilla_admin.db'); conn.cursor().execute("INSERT OR IGNORE INTO admins VALUES (?)", (int(m.text),)); conn.commit(); conn.close()
-        await m.answer(f"✅ {m.text} теперь админ.")
+        await m.answer(f"✅ {m.text} назначен админом.")
     except: await m.answer("❌ Ошибка.")
     await state.clear()
 
 @router.callback_query(F.data == "start_broadcast")
-async def broadcast(cb: CallbackQuery, state: FSMContext):
+async def br_s(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("📢 Введите текст рассылки:"); await state.set_state(States.admin_broadcast)
 
 @router.message(States.admin_broadcast)
-async def broadcast_process(m: Message, state: FSMContext):
+async def br_p(m: Message, state: FSMContext):
     conn = sqlite3.connect('vanilla_admin.db'); users = conn.cursor().execute("SELECT user_id FROM users").fetchall(); conn.close()
-    count = 0
     for u in users:
-        try: await bot.send_message(u[0], m.text); count += 1
+        try: await bot.send_message(u[0], m.text)
         except: pass
-    await m.answer(f"✅ Готово! Рассылка отправлена {count} пользователям.", reply_markup=admin_kb()); await state.clear()
+    await m.answer("✅ Рассылка завершена!", reply_markup=admin_kb()); await state.clear()
 
 # --- ИНФО ---
 @router.callback_query(F.data == "ip")
-async def show_ip(c: CallbackQuery):
+async def s_ip(c: CallbackQuery):
     await c.message.answer("🌐 IP: <code>ig01.incloudgame.ru:27119</code>", parse_mode="HTML"); await c.answer()
 
 @router.callback_query(F.data == "rules")
-async def show_rules(c: CallbackQuery):
+async def s_rl(c: CallbackQuery):
     await c.message.answer("📖 <b>Наши правила:</b>\n\n🔹 <a href='https://telegra.ph/Pravila-Socialnogo-Vzaimodejstviya-VanillaLand-01-30'>Правила Чата</a>\n🔹 <a href='https://telegra.ph/Pravila-Vanilnogo-Servera-Vanilla-Land-12-03'>Правила Сервера</a>", parse_mode="HTML", disable_web_page_preview=True); await c.answer()
 
 @router.callback_query(F.data == "admin_close")
 async def cl(c: CallbackQuery): await c.message.delete()
 
+# --- ЭХО (ОТВЕТ НА ВСЁ ОСТАЛЬНОЕ) ---
+@router.message()
+async def echo(m: Message):
+    if not await check_access(m): return
+    await m.answer("🤔 Я не понимаю вас. Напишите /start, чтобы открыть меню.")
+
 # --- ЗАПУСК ---
 async def main():
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
